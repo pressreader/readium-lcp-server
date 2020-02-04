@@ -61,6 +61,9 @@ type dbIndex struct {
 
 func (i dbIndex) Get(id string) (Content, error) {
 	records, err := i.get.Query(id)
+	if err != nil {
+		return Content{}, err
+	}
 	defer records.Close()
 	if records.Next() {
 		var c Content
@@ -71,7 +74,7 @@ func (i dbIndex) Get(id string) (Content, error) {
 	return Content{}, NotFound
 }
 
-func (i dbIndex) Add(c Content) error {
+func (i dbIndex) Add(c Content) error {	
 	_, err := i.add.Exec(c.Id, c.EncryptionKey, c.Location, c.Length, c.Sha256, c.Type)
 	return err
 }
