@@ -158,6 +158,12 @@ func AddContent(w http.ResponseWriter, r *http.Request, s Server) {
 	// udpate the database with a new content key and file location if the content id already exists
 	var c index.Content
 	c, err = s.Index().Get(contentID)
+	if err != nil && err != index.NotFound {
+		// unable to query db
+		problem.Error(w, r, problem.Problem{Detail: err.Error()}, http.StatusInternalServerError)
+		return
+	}
+
 	// set the encryption key (c.EncryptionKey)
 	c.EncryptionKey = publication.ContentKey
 	// set the encrypted file name (c.Location)
