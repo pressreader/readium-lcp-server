@@ -29,17 +29,21 @@ type Store interface {
 }
 
 type sqlStore struct {
-	db *sql.DB
+	db              *sql.DB
+	listall         *sql.Stmt
+	list            *sql.Stmt
+	updaterights    *sql.Stmt
+	add             *sql.Stmt
+	update          *sql.Stmt
+	updatelsdstatus *sql.Stmt
+	get             *sql.Stmt
 }
 
 // ListAll lists all licenses in ante-chronological order
 // pageNum starts at 0
 //
 func (s *sqlStore) ListAll(page int, pageNum int) func() (LicenseReport, error) {
-	listLicenses, err := s.db.Query(`SELECT id, user_id, provider, issued, updated,
-	rights_print, rights_copy, rights_start, rights_end, content_fk
-	FROM license
-	ORDER BY issued desc LIMIT ? OFFSET ? `, page, pageNum*page)
+	listLicenses, err := s.listall.Query(page, pageNum*page)
 	if err != nil {
 		return func() (LicenseReport, error) { return LicenseReport{}, err }
 	}
@@ -67,10 +71,7 @@ func (s *sqlStore) ListAll(page int, pageNum int) func() (LicenseReport, error) 
 // pageNum starting at 0
 //
 func (s *sqlStore) List(contentID string, page int, pageNum int) func() (LicenseReport, error) {
-	listLicenses, err := s.db.Query(`SELECT id, user_id, provider, issued, updated,
-	rights_print, rights_copy, rights_start, rights_end, content_fk
-	FROM license
-	WHERE content_fk=? LIMIT ? OFFSET ? `, contentID, page, pageNum*page)
+	listLicenses, err := s.list.Query(contentID, page, pageNum*page)
 	if err != nil {
 		return func() (LicenseReport, error) { return LicenseReport{}, err }
 	}
@@ -96,8 +97,7 @@ func (s *sqlStore) List(contentID string, page int, pageNum int) func() (License
 // UpdateRights
 //
 func (s *sqlStore) UpdateRights(l License) error {
-	result, err := s.db.Exec("UPDATE license SET rights_print=?, rights_copy=?, rights_start=?, rights_end=?,updated=?  WHERE id=?",
-		l.Rights.Print, l.Rights.Copy, l.Rights.Start, l.Rights.End, time.Now().UTC().Truncate(time.Second), l.ID)
+	result, err := s.updaterights.Exec(l.Rights.Print, l.Rights.Copy, l.Rights.Start, l.Rights.End, time.Now().UTC().Truncate(time.Second), l.ID)
 
 	if err == nil {
 		if r, _ := result.RowsAffected(); r == 0 {
@@ -110,9 +110,7 @@ func (s *sqlStore) UpdateRights(l License) error {
 // Add creates a new record in the license table
 //
 func (s *sqlStore) Add(l License) error {
-	_, err := s.db.Exec(`INSERT INTO license (id, user_id, provider, issued, updated,
-	rights_print, rights_copy, rights_start, rights_end, content_fk) 
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?,  ?, ?)`,
+	_, err := s.add.Exec(
 		l.ID, l.User.ID, l.Provider, l.Issued, nil,
 		l.Rights.Print, l.Rights.Copy, l.Rights.Start, l.Rights.End,
 		l.ContentID)
@@ -122,9 +120,7 @@ func (s *sqlStore) Add(l License) error {
 // Update updates a record in the license table
 //
 func (s *sqlStore) Update(l License) error {
-	_, err := s.db.Exec(`UPDATE license SET user_id=?,provider=?,updated=?,
-				rights_print=?,	rights_copy=?,	rights_start=?,	rights_end=?, content_fk =?
-				WHERE id=?`,
+	_, err := s.update.Exec(
 		l.User.ID, l.Provider,
 		time.Now().UTC().Truncate(time.Second),
 		l.Rights.Print, l.Rights.Copy, l.Rights.Start, l.Rights.End,
@@ -137,8 +133,7 @@ func (s *sqlStore) Update(l License) error {
 // UpdateLsdStatus
 //
 func (s *sqlStore) UpdateLsdStatus(id string, status int32) error {
-	_, err := s.db.Exec(`UPDATE license SET lsd_status =?
-				WHERE id=?`,
+	_, err := s.updatelsdstatus.Exec(
 		status,
 		id)
 
@@ -152,9 +147,7 @@ func (s *sqlStore) Get(id string) (License, error) {
 	var l License
 	l.Rights = new(UserRights)
 
-	row := s.db.QueryRow(`SELECT id, user_id, provider, issued, updated, rights_print, rights_copy,
-	rights_start, rights_end, content_fk FROM license
-	where id = ?`, id)
+	row := s.get.QueryRow(id)
 
 	err := row.Scan(&l.ID, &l.User.ID, &l.Provider, &l.Issued, &l.Updated,
 		&l.Rights.Print, &l.Rights.Copy, &l.Rights.Start, &l.Rights.End,
@@ -174,15 +167,99 @@ func (s *sqlStore) Get(id string) (License, error) {
 // NewSqlStore
 //
 func NewSqlStore(db *sql.DB) (Store, error) {
-	// if sqlite, create the license table if it does not exist
-	if strings.HasPrefix(config.Config.LcpServer.Database, "sqlite") {
-		_, err := db.Exec(tableDef)
+	var tabledefquery, listallquery, listquery, updaterightsquery, addquery, updatequery, updatelsdstatusquery, getquery string
+
+	if strings.HasPrefix(config.Config.LcpServer.Database, "postgres") {
+		// postgres
+		tabledefquery = tableDefPostgers
+		listallquery = `SELECT id, user_id, provider, issued, updated,
+			rights_print, rights_copy, rights_start, rights_end, content_fk
+			FROM license
+			ORDER BY issued desc LIMIT $1 OFFSET $2`
+		listquery = `SELECT id, user_id, provider, issued, updated,
+			rights_print, rights_copy, rights_start, rights_end, content_fk
+			FROM license
+			WHERE content_fk=$1 LIMIT $2 OFFSET $3`
+		updaterightsquery = "UPDATE license SET rights_print=$1, rights_copy=$2, rights_start=$3, rights_end=$4, updated=$5 WHERE id=$6"
+		addquery = `INSERT INTO license (id, user_id, provider, issued, updated,
+			rights_print, rights_copy, rights_start, rights_end, content_fk) 
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+		updatequery = `UPDATE license SET user_id=$1, provider=$2, updated=$3,
+			rights_print=$4, rights_copy=$5, rights_start=$6, rights_end=$7, content_fk =$8
+			WHERE id=$9`
+		updatelsdstatusquery = `UPDATE license SET lsd_status =$1 WHERE id=$2`
+		getquery = `SELECT id, user_id, provider, issued, updated, rights_print, rights_copy,
+			rights_start, rights_end, content_fk FROM license
+			where id = $1`
+	} else {
+		// mysql/sqlite
+		tabledefquery = tableDef
+		listallquery = `SELECT id, user_id, provider, issued, updated,
+			rights_print, rights_copy, rights_start, rights_end, content_fk
+			FROM license
+			ORDER BY issued desc LIMIT ? OFFSET ?`
+		listquery = `SELECT id, user_id, provider, issued, updated,
+			rights_print, rights_copy, rights_start, rights_end, content_fk
+			FROM license
+			WHERE content_fk=? LIMIT ? OFFSET ?`
+		updaterightsquery = "UPDATE license SET rights_print=?, rights_copy=?, rights_start=?, rights_end=?,u pdated=? WHERE id=?"
+		addquery = `INSERT INTO license (id, user_id, provider, issued, updated,
+			rights_print, rights_copy, rights_start, rights_end, content_fk) 
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		updatequery = `UPDATE license SET user_id=?, provider=?, updated=?,
+			rights_print=?, rights_copy=?, rights_start=?, rights_end=?, content_fk =?
+			WHERE id=?`
+		updatelsdstatusquery = `UPDATE license SET lsd_status =? WHERE id=?`
+		getquery = `SELECT id, user_id, provider, issued, updated, rights_print, rights_copy,
+			rights_start, rights_end, content_fk FROM license
+			where id = ?`
+	}
+
+	// if sqlite/postgres, create the license table if it does not exist
+	if strings.HasPrefix(config.Config.LcpServer.Database, "sqlite") || strings.HasPrefix(config.Config.LcpServer.Database, "postgres") {
+		_, err := db.Exec(tabledefquery)
 		if err != nil {
-			log.Println("Error creating sqlite license table")
+			log.Println("Error creating license table")
 			return nil, err
 		}
 	}
-	return &sqlStore{db}, nil
+
+	listall, err := db.Prepare(listallquery)
+	if err != nil {
+		return nil, err
+	}
+
+	list, err := db.Prepare(listquery)
+	if err != nil {
+		return nil, err
+	}
+
+	updaterights, err := db.Prepare(updaterightsquery)
+	if err != nil {
+		return nil, err
+	}
+
+	add, err := db.Prepare(addquery)
+	if err != nil {
+		return nil, err
+	}
+
+	update, err := db.Prepare(updatequery)
+	if err != nil {
+		return nil, err
+	}
+
+	updatelsdstatus, err := db.Prepare(updatelsdstatusquery)
+	if err != nil {
+		return nil, err
+	}
+
+	get, err := db.Prepare(getquery)
+	if err != nil {
+		return nil, err
+	}
+
+	return &sqlStore{db, listall, list, updaterights, add, update, updatelsdstatus, get}, nil
 }
 
 const tableDef = "CREATE TABLE IF NOT EXISTS license (" +
@@ -197,4 +274,18 @@ const tableDef = "CREATE TABLE IF NOT EXISTS license (" +
 	"rights_end datetime DEFAULT NULL," +
 	"content_fk varchar(255) NOT NULL," +
 	"lsd_status integer default 0," +
+	"FOREIGN KEY(content_fk) REFERENCES content(id))"
+
+const tableDefPostgers = "CREATE TABLE IF NOT EXISTS license (" +
+	"id VARCHAR(255) PRIMARY KEY," +
+	"user_id VARCHAR(255) NOT NULL," +
+	"provider VARCHAR(255) NOT NULL," +
+	"issued TIMESTAMPTZ NOT NULL," +
+	"updated TIMESTAMPTZ DEFAULT NULL," +
+	"rights_print INT DEFAULT NULL," +
+	"rights_copy INT DEFAULT NULL," +
+	"rights_start TIMESTAMPTZ DEFAULT NULL," +
+	"rights_end TIMESTAMPTZ DEFAULT NULL," +
+	"content_fk VARCHAR(255) NOT NULL," +
+	"lsd_status INT default 0," +
 	"FOREIGN KEY(content_fk) REFERENCES content(id))"
