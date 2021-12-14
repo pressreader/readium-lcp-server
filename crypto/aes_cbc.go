@@ -40,7 +40,9 @@ const (
 )
 
 func (e cbcEncrypter) Signature() string {
-	// W3C padding scheme, not PKCS#7 (see last parameter "insertPadLengthAll" [false] of PaddedReader constructor)
+	//// W3C padding scheme, not PKCS#7 (see last parameter "insertPadLengthAll" [false] of PaddedReader constructor)
+	// Attention: changed to PKCS#7 to be compatible with WebCryptoAPI, see https://www.w3.org/TR/WebCryptoAPI/
+	//            (see last parameter "insertPadLengthAll" [true] of PaddedReader constructor)
 	return "http://www.w3.org/2001/04/xmlenc#aes256-cbc"
 }
 
@@ -51,7 +53,8 @@ func (e cbcEncrypter) GenerateKey() (ContentKey, error) {
 
 func (e cbcEncrypter) Encrypt(key ContentKey, r io.Reader, w io.Writer) error {
 
-	r = PaddedReader(r, aes.BlockSize, false)
+	// Attention: changed to [true] to be compatible with WebCryptoAPI
+	r = PaddedReader(r, aes.BlockSize, true)
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
