@@ -58,6 +58,10 @@ type dbTransactions struct {
 //
 func (i dbTransactions) Get(id int) (Event, error) {
 	records, err := i.get.Query(id)
+	if err != nil {
+		return Event{}, err
+	}
+
 	var typeInt int
 
 	defer records.Close()
@@ -77,14 +81,7 @@ func (i dbTransactions) Get(id int) (Event, error) {
 // The parameter eventType corresponds to the field 'type' in table 'event'
 //
 func (i dbTransactions) Add(e Event, eventType int) error {
-	add, err := i.db.Prepare("INSERT INTO event (device_name, timestamp, type, device_id, license_status_fk) VALUES (?, ?, ?, ?, ?)")
-
-	if err != nil {
-		return err
-	}
-
-	defer add.Close()
-	_, err = add.Exec(e.DeviceName, e.Timestamp, eventType, e.DeviceId, e.LicenseStatusFk)
+	_, err := i.add.Exec(e.DeviceName, e.Timestamp, eventType, e.DeviceId, e.LicenseStatusFk)
 	return err
 }
 
@@ -157,9 +154,29 @@ func (i dbTransactions) CheckDeviceStatus(licenseStatusFk int, deviceId string) 
 // Open defines scripts for queries & create the 'event' table if it does not exist
 //
 func Open(db *sql.DB) (t Transactions, err error) {
-	// if sqlite, create the event table in the lsd db if it does not exist
-	if strings.HasPrefix(config.Config.LsdServer.Database, "sqlite") {
-		_, err = db.Exec(tableDef)
+
+	var createTableQuery, getQuery, getByLicenseStatusIdQuery, checkDeviceStatusQuery, addQuery, listRegisteredDevicesQuery string
+	if strings.HasPrefix(config.Config.LcpServer.Database, "postgres") {
+		// postgres
+		createTableQuery = tableDefPostgres
+		getQuery = "SELECT * FROM event WHERE id = $1 LIMIT 1"
+		getByLicenseStatusIdQuery = "SELECT * FROM event WHERE license_status_fk = $1"
+		checkDeviceStatusQuery = "SELECT type FROM event WHERE license_status_fk = $1 AND device_id = $2 ORDER BY timestamp DESC LIMIT 1"
+		listRegisteredDevicesQuery = "SELECT device_id, device_name, timestamp FROM event WHERE license_status_fk = $1 AND type = 1"
+		addQuery = "INSERT INTO event (device_name, timestamp, type, device_id, license_status_fk) VALUES ($1, $2, $3, $4, $5)"
+	} else {
+		// mysql/sqlite
+		createTableQuery = tableDef
+		getQuery = "SELECT * FROM event WHERE id = ? LIMIT 1"
+		getByLicenseStatusIdQuery = "SELECT * FROM event WHERE license_status_fk = ?"
+		checkDeviceStatusQuery = "SELECT type FROM event WHERE license_status_fk = ? AND device_id = ? ORDER BY timestamp DESC LIMIT 1"
+		listRegisteredDevicesQuery = "SELECT device_id, device_name, timestamp FROM event WHERE license_status_fk = ? AND type = 1"
+		addQuery = "INSERT INTO event (device_name, timestamp, type, device_id, license_status_fk) VALUES (?, ?, ?, ?, ?)"
+	}
+
+	// if sqlite/postgres, create the event table in the lsd db if it does not exist
+	if strings.HasPrefix(config.Config.LsdServer.Database, "sqlite") || strings.HasPrefix(config.Config.LcpServer.Database, "postgres") {
+		_, err = db.Exec(createTableQuery)
 		if err != nil {
 			log.Println("Error creating sqlite event table")
 			return
@@ -167,25 +184,34 @@ func Open(db *sql.DB) (t Transactions, err error) {
 	}
 
 	// select an event by its id
-	get, err := db.Prepare("SELECT * FROM event WHERE id = ? LIMIT 1")
+	get, err := db.Prepare(getQuery)
 	if err != nil {
 		return
 	}
 
-	getbylicensestatusid, err := db.Prepare("SELECT * FROM event WHERE license_status_fk = ?")
+	// add an event
+	add, err := db.Prepare(addQuery)
+	if err != nil {
+		return
+	}
+
+	getbylicensestatusid, err := db.Prepare(getByLicenseStatusIdQuery)
+	if err != nil {
+		return
+	}
 
 	// the status of a device corresponds to the latest event stored in the db.
-	checkdevicestatus, err := db.Prepare(`SELECT type FROM event WHERE license_status_fk = ?
-	AND device_id = ? ORDER BY timestamp DESC LIMIT 1`)
-
-	listregistereddevices, err := db.Prepare(`SELECT device_id,
-	device_name, timestamp  FROM event  WHERE license_status_fk = ? AND type = 1`)
-
+	checkdevicestatus, err := db.Prepare(checkDeviceStatusQuery)
 	if err != nil {
 		return
 	}
 
-	t = dbTransactions{db, get, nil, getbylicensestatusid, checkdevicestatus, listregistereddevices}
+	listregistereddevices, err := db.Prepare(listRegisteredDevicesQuery)
+	if err != nil {
+		return
+	}
+
+	t = dbTransactions{db, get, add, getbylicensestatusid, checkdevicestatus, listregistereddevices}
 	return
 }
 
@@ -196,6 +222,17 @@ const tableDef = "CREATE TABLE IF NOT EXISTS event (" +
 	"type int NOT NULL," +
 	"device_id varchar(255) DEFAULT NULL," +
 	"license_status_fk int NOT NULL," +
+	"FOREIGN KEY(license_status_fk) REFERENCES license_status(id)" +
+	");" +
+	"CREATE INDEX IF NOT EXISTS license_status_fk_index on event (license_status_fk);"
+
+const tableDefPostgres = "CREATE TABLE IF NOT EXISTS event (" +
+	"id SERIAL PRIMARY KEY," +
+	"device_name VARCHAR(255) DEFAULT NULL," +
+	"timestamp TIMESTAMPTZ NOT NULL," +
+	"type INT NOT NULL," +
+	"device_id VARCHAR(255) DEFAULT NULL," +
+	"license_status_fk INT NOT NULL," +
 	"FOREIGN KEY(license_status_fk) REFERENCES license_status(id)" +
 	");" +
 	"CREATE INDEX IF NOT EXISTS license_status_fk_index on event (license_status_fk);"

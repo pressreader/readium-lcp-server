@@ -77,12 +77,6 @@ func (i dbLicenseStatuses) getByID(id int) (*LicenseStatus, error) {
 
 //Add adds license status to database
 func (i dbLicenseStatuses) Add(ls LicenseStatus) error {
-	add, err := i.db.Prepare("INSERT INTO license_status (status, license_updated, status_updated, device_count, potential_rights_end, license_ref,  rights_end) VALUES (?, ?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		return err
-	}
-	defer add.Close()
-
 	statusDB, err := status.SetStatus(ls.Status)
 
 	if err == nil {
@@ -91,7 +85,7 @@ func (i dbLicenseStatuses) Add(ls LicenseStatus) error {
 		if ls.PotentialRights != nil && ls.PotentialRights.End != nil && !(*ls.PotentialRights.End).IsZero() {
 			end = ls.PotentialRights.End
 		}
-		_, err = add.Exec(statusDB, ls.Updated.License, ls.Updated.Status, ls.DeviceCount, end, ls.LicenseRef, ls.CurrentEndLicense)
+		_, err = i.add.Exec(statusDB, ls.Updated.License, ls.Updated.Status, ls.DeviceCount, end, ls.LicenseRef, ls.CurrentEndLicense)
 	}
 
 	return err
@@ -173,8 +167,7 @@ func (i dbLicenseStatuses) Update(ls LicenseStatus) error {
 	}
 
 	var result sql.Result
-	result, err = i.db.Exec("UPDATE license_status SET status=?, license_updated=?, status_updated=?, device_count=?,potential_rights_end=?,  rights_end=?  WHERE id=?",
-		statusInt, ls.Updated.License, ls.Updated.Status, ls.DeviceCount, potentialRightsEnd, ls.CurrentEndLicense, ls.ID)
+	result, err = i.update.Exec(statusInt, ls.Updated.License, ls.Updated.Status, ls.DeviceCount, potentialRightsEnd, ls.CurrentEndLicense, ls.ID)
 
 	if err == nil {
 		if r, _ := result.RowsAffected(); r == 0 {
@@ -186,29 +179,61 @@ func (i dbLicenseStatuses) Update(ls LicenseStatus) error {
 
 // Open defines scripts for queries & create table license_status if it does not exist
 func Open(db *sql.DB) (l LicenseStatuses, err error) {
-	// if sqlite, create the license_status table in the lsd db if it does not exist
-	if strings.HasPrefix(config.Config.LsdServer.Database, "sqlite") {
-		_, err = db.Exec(tableDef)
+
+	var createTableQuery, getQuery, getByLicenseIdQuery, addQuery, updateQuery, listQuery string
+	if strings.HasPrefix(config.Config.LcpServer.Database, "postgres") {
+		// postgres
+		createTableQuery = tableDefPostgres
+		getQuery = "SELECT * FROM license_status WHERE id = $1 LIMIT 1"
+		getByLicenseIdQuery = "SELECT * FROM license_status where license_ref = $1"
+		listQuery = "SELECT status, license_updated, status_updated, device_count, license_ref FROM license_status WHERE device_count >= $1 ORDER BY id DESC LIMIT $2 OFFSET $3"
+		addQuery = "INSERT INTO license_status (status, license_updated, status_updated, device_count, potential_rights_end, license_ref, rights_end) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+		updateQuery = "UPDATE license_status SET status=$1, license_updated=$2, status_updated=$3, device_count=$4, potential_rights_end=$5, rights_end=$6 WHERE id=$7"
+	} else {
+		// mysql/sqlite
+		createTableQuery = tableDef
+		getQuery = "SELECT * FROM license_status WHERE id = ? LIMIT 1"
+		getByLicenseIdQuery = "SELECT * FROM license_status where license_ref = ?"
+		listQuery = "SELECT status, license_updated, status_updated, device_count, license_ref FROM license_status WHERE device_count >= ? ORDER BY id DESC LIMIT ? OFFSET ?"
+		addQuery = "INSERT INTO license_status (status, license_updated, status_updated, device_count, potential_rights_end, license_ref, rights_end) VALUES (?, ?, ?, ?, ?, ?, ?)"
+		updateQuery = "UPDATE license_status SET status=?, license_updated=?, status_updated=?, device_count=?,potential_rights_end=?,  rights_end=?  WHERE id=?"
+	}
+
+	// if sqlite/postgres, create the license_status table in the lsd db if it does not exist
+	if strings.HasPrefix(config.Config.LsdServer.Database, "sqlite") || strings.HasPrefix(config.Config.LcpServer.Database, "postgres") {
+		_, err = db.Exec(createTableQuery)
 		if err != nil {
 			log.Println("Error creating license_status table")
 			return
 		}
 	}
 
-	get, err := db.Prepare("SELECT * FROM license_status WHERE id = ? LIMIT 1")
+	get, err := db.Prepare(getQuery)
 	if err != nil {
 		return
 	}
 
-	list, err := db.Prepare(`SELECT id, status, license_updated, status_updated, device_count, license_ref FROM license_status WHERE device_count >= ?
-		ORDER BY id DESC LIMIT ? OFFSET ?`)
-
-	getbylicenseid, err := db.Prepare("SELECT * FROM license_status where license_ref = ?")
-
+	list, err := db.Prepare(listQuery)
 	if err != nil {
 		return
 	}
-	l = dbLicenseStatuses{db, get, nil, list, getbylicenseid, nil}
+
+	getbylicenseid, err := db.Prepare(getByLicenseIdQuery)
+	if err != nil {
+		return
+	}
+
+	add, err := db.Prepare(addQuery)
+	if err != nil {
+		return
+	}
+
+	update, err := db.Prepare(updateQuery)
+	if err != nil {
+		return
+	}
+
+	l = dbLicenseStatuses{db, get, add, list, getbylicenseid, update}
 	return
 }
 
@@ -221,5 +246,17 @@ const tableDef = "CREATE TABLE IF NOT EXISTS license_status (" +
 	"potential_rights_end datetime DEFAULT NULL," +
 	"license_ref varchar(255) NOT NULL," +
 	"rights_end datetime DEFAULT NULL  " +
+	");" +
+	"CREATE INDEX IF NOT EXISTS license_ref_index on license_status (license_ref);"
+
+const tableDefPostgres = "CREATE TABLE IF NOT EXISTS license_status (" +
+	"id SERIAL PRIMARY KEY," +
+	"status INT NOT NULL," +
+	"license_updated TIMESTAMPTZ NOT NULL," +
+	"status_updated TIMESTAMPTZ NOT NULL," +
+	"device_count INT DEFAULT NULL," +
+	"potential_rights_end TIMESTAMPTZ DEFAULT NULL," +
+	"license_ref VARCHAR(255) NOT NULL," +
+	"rights_end TIMESTAMPTZ DEFAULT NULL  " +
 	");" +
 	"CREATE INDEX IF NOT EXISTS license_ref_index on license_status (license_ref);"
