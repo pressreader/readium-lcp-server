@@ -55,14 +55,18 @@ type Content struct {
 }
 
 type dbIndex struct {
-	db   *sql.DB
-	get  *sql.Stmt
-	add  *sql.Stmt
-	list *sql.Stmt
+	db     *sql.DB
+	get    *sql.Stmt
+	add    *sql.Stmt
+	update *sql.Stmt
+	list   *sql.Stmt
 }
 
 func (i dbIndex) Get(id string) (Content, error) {
 	records, err := i.get.Query(id)
+	if err != nil {
+		return Content{}, err
+	}
 	defer records.Close()
 	if records.Next() {
 		var c Content
@@ -74,22 +78,12 @@ func (i dbIndex) Get(id string) (Content, error) {
 }
 
 func (i dbIndex) Add(c Content) error {
-	add, err := i.db.Prepare("INSERT INTO content (id,encryption_key,location,length,sha256,type) VALUES (?, ?, ?, ?, ?, ?)")
-	if err != nil {
-		return err
-	}
-	defer add.Close()
-	_, err = add.Exec(c.ID, c.EncryptionKey, c.Location, c.Length, c.Sha256, c.Type)
+	_, err := i.add.Exec(c.ID, c.EncryptionKey, c.Location, c.Length, c.Sha256, c.Type)
 	return err
 }
 
 func (i dbIndex) Update(c Content) error {
-	add, err := i.db.Prepare("UPDATE content SET encryption_key=? , location=?, length=?, sha256=?, type=? WHERE id=?")
-	if err != nil {
-		return err
-	}
-	defer add.Close()
-	_, err = add.Exec(c.EncryptionKey, c.Location, c.Length, c.Sha256, c.Type, c.ID)
+	_, err := i.add.Exec(c.EncryptionKey, c.Location, c.Length, c.Sha256, c.Type, c.ID)
 	return err
 }
 
@@ -113,30 +107,65 @@ func (i dbIndex) List() func() (Content, error) {
 
 // Open opens an SQL database
 func Open(db *sql.DB) (i Index, err error) {
+	var createTableQuery, getQuery, addQuery, updateQuery, listQuery string
+	// if postgres use '$n' instead of '?'
+	if strings.HasPrefix(config.Config.LcpServer.Database, "postgres") {
+		createTableQuery = tableDefPostgres
+		getQuery = "SELECT id,encryption_key,location,length,sha256,type FROM content WHERE id = $1 LIMIT 1"
+		addQuery = "INSERT INTO content (id,encryption_key,location,length,sha256,type) VALUES ($1, $2, $3, $4, $5, $6)"
+		updateQuery = "UPDATE content SET encryption_key=$1, location=$2, length=$3, sha256=$4, type=$5 WHERE id=$6"
+		listQuery = "SELECT id,encryption_key,location,length,sha256,type FROM content"
+	} else {
+		// sqlite/mysql
+		createTableQuery = tableDef
+		getQuery = "SELECT id,encryption_key,location,length,sha256,type FROM content WHERE id = ? LIMIT 1"
+		addQuery = "INSERT INTO content (id,encryption_key,location,length,sha256,type) VALUES (?, ?, ?, ?, ?, ?)"
+		updateQuery = "UPDATE content SET encryption_key=?, location=?, length=?, sha256=?, type=? WHERE id=?"
+		listQuery = "SELECT id,encryption_key,location,length,sha256,type FROM content"
+	}
+
+	// create the content table in the lcp db if it does not exist
+	_, err = db.Exec(createTableQuery)
+	if err != nil {
+		return
+	}
+
 	// if sqlite, create the content table in the lcp db if it does not exist
 	if strings.HasPrefix(config.Config.LcpServer.Database, "sqlite") {
-		_, err = db.Exec(tableDef)
-		if err != nil {
-			return
-		}
 		db.Exec("ALTER TABLE content ADD COLUMN \"type\" varchar(255) NOT NULL DEFAULT 'application/epub+zip'")
 	}
 
-	get, err := db.Prepare("SELECT id,encryption_key,location,length,sha256,type FROM content WHERE id = ? LIMIT 1")
+	get, err := db.Prepare(getQuery)
 	if err != nil {
 		return
 	}
-	list, err := db.Prepare("SELECT id,encryption_key,location,length,sha256,type FROM content")
+	add, err := db.Prepare(addQuery)
 	if err != nil {
 		return
 	}
-	i = dbIndex{db, get, nil, list}
+	update, err := db.Prepare(updateQuery)
+	if err != nil {
+		return
+	}
+	list, err := db.Prepare(listQuery)
+	if err != nil {
+		return
+	}
+	i = dbIndex{db, get, add, update, list}
 	return
 }
 
 const tableDef = "CREATE TABLE IF NOT EXISTS content (" +
 	"id varchar(255) PRIMARY KEY," +
 	"encryption_key varchar(64) NOT NULL," +
+	"location text NOT NULL," +
+	"length bigint," +
+	"sha256 varchar(64)," +
+	"\"type\" varchar(256) NOT NULL default 'application/epub+zip')"
+
+const tableDefPostgres = "CREATE TABLE IF NOT EXISTS content (" +
+	"id varchar(255) PRIMARY KEY," +
+	"encryption_key bytea NOT NULL," +
 	"location text NOT NULL," +
 	"length bigint," +
 	"sha256 varchar(64)," +
