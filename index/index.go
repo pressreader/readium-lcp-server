@@ -83,7 +83,7 @@ func (i dbIndex) Add(c Content) error {
 }
 
 func (i dbIndex) Update(c Content) error {
-	_, err := i.add.Exec(c.EncryptionKey, c.Location, c.Length, c.Sha256, c.Type, c.ID)
+	_, err := i.update.Exec(c.EncryptionKey, c.Location, c.Length, c.Sha256, c.Type, c.ID)
 	return err
 }
 
