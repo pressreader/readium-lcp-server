@@ -11,7 +11,7 @@ require (
 	github.com/go-sql-driver/mysql v1.5.0
 	github.com/gorilla/mux v1.7.4
 	github.com/jeffbmartinez/delay v0.0.0-20150608194421-e1b689d78b33
-	github.com/lib/pq v1.3.0
+	github.com/lib/pq v1.10.4
 	github.com/mattn/go-sqlite3 v1.10.0
 	github.com/nicksnyder/go-i18n v1.10.1
 	github.com/rickb777/date v1.12.4
