@@ -93,6 +93,7 @@ func copyInputToLicense(licIn *license.License, licOut *license.License) {
 	licOut.User.Email = licIn.User.Email
 	licOut.User.Name = licIn.User.Name
 	licOut.User.Encrypted = licIn.User.Encrypted
+	licOut.User.Context = licIn.User.Context
 	licOut.Links = licIn.Links
 }
 
@@ -279,7 +280,7 @@ func GetLicense(w http.ResponseWriter, r *http.Request, s Server) {
 			// do not escape characters
 			enc := json.NewEncoder(w)
 			enc.SetEscapeHTML(false)
-			enc.Encode(licOut)
+			enc.Encode(licOut)			
 			return
 		}
 		// unknown error
@@ -732,7 +733,7 @@ func DecodeJSONLicense(r *http.Request, lic *license.License) error {
 	}
 
 	err := dec.Decode(&lic)
-
+	
 	if err != nil && err.Error() != "EOF" {
 		log.Print("Decode license: invalid json structure")
 	}

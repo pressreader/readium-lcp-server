@@ -62,6 +62,7 @@ type UserInfo struct {
 	Email     string   `json:"email,omitempty"`
 	Name      string   `json:"name,omitempty"`
 	Encrypted []string `json:"encrypted,omitempty"`
+	Context   string   `json:"https://www.pressreader.com/lcp/user/context,omitempty"`
 }
 
 type UserRights struct {
